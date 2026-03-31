@@ -1,0 +1,18 @@
+flask==3.0.3
+flask-cors==4.0.1
+flask-sqlalchemy==3.1.1
+psycopg2-binary==2.9.9
+pgvector==0.3.2
+werkzeug==3.0.3
+numpy==1.26.4
+
+# AI Face Recognition (ауыр, GPU болмаса баяу орнатылады)
+# Қысқа демо үшін төмендегі 2 жолды комментке алуға болады:
+deepface==0.0.93
+tf-keras==2.16.0
+
+# Fallback (DeepFace болмаса)
+opencv-python-headless==4.10.0.84
+
+# .env файлын оқу үшін
+python-dotenv==1.0.1
