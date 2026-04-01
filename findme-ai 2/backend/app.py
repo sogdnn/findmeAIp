@@ -1,54 +1,43 @@
-from flask import Flask
-from flask_cors import CORS
-from database import db
-import os
+from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from database import FindMeDatabase
+import uuid
 
-def create_app():
-    app = Flask(__name__)
-    CORS(app)
+app = FastAPI()
 
-    # ─── Configuration ───────────────────────────────────────────────────────
-    # .env файлынан немесе дефолт мәндерден алу
-    app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get(
-        'DATABASE_URL',
-        'postgresql://postgres:password@localhost:5432/findme_db'
+# Разрешаем фронтенду подключаться
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+db = FindMeDatabase(host="localhost", user="root", password="your_password", database="findme_ai_db")
+
+class SearchAttributes(BaseModel):
+    gender: str
+    hair_color: str
+    clothing_upper: str
+
+@app.post("/api/v1/register")
+async def register(data: SearchAttributes):
+    # Логика сохранения характеристик в JSON
+    person_id = db.create_person_with_attributes(
+        user_id="user_123", 
+        char_data={"gender": data.gender, "hair": {"color": data.hair_color}},
+        clothing_data={"upper": data.clothing_upper}
     )
-    app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-    app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16 MB
+    return {"person_id": person_id}
 
-    # Суреттер сақталатын папка
-    UPLOAD_FOLDER = os.path.join(os.path.dirname(__file__), 'uploads')
-    os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-    app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-
-    # ─── DB Init ─────────────────────────────────────────────────────────────
-    db.init_app(app)
-
-    with app.app_context():
-        # pgvector extension (тек PostgreSQL)
-        try:
-            db.session.execute(db.text('CREATE EXTENSION IF NOT EXISTS vector'))
-            db.session.commit()
-        except Exception as e:
-            print(f"pgvector extension note: {e}")
-        db.create_all()
-
-    # ─── Routes ──────────────────────────────────────────────────────────────
-    from routes.cases import cases_bp
-    from routes.sightings import sightings_bp
-    from routes.matches import matches_bp
-
-    app.register_blueprint(cases_bp, url_prefix='/api')
-    app.register_blueprint(sightings_bp, url_prefix='/api')
-    app.register_blueprint(matches_bp, url_prefix='/api')
-
-    @app.route('/api/health')
-    def health():
-        return {'status': 'ok', 'message': 'FindMe AI is running 🔍'}
-
-    return app
-
-
-if __name__ == '__main__':
-    app = create_app()
-    app.run(debug=True, port=5000)
+@app.post("/api/v1/search/face")
+async def search_face(file: UploadFile = File(...)):
+    # Здесь твоя нейронка обрабатывает файл
+    # Возвращаем имитацию для теста связи
+    return {
+        "matches": [
+            {"person_id": str(uuid.uuid4()), "confidence": 0.95},
+            {"person_id": str(uuid.uuid4()), "confidence": 0.82}
+        ]
+    }
