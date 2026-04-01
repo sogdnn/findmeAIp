@@ -1,93 +1,61 @@
-from flask_sqlalchemy import SQLAlchemy
-from pgvector.sqlalchemy import Vector
-from sqlalchemy import Column, Integer, String, DateTime, Float, Boolean, Text
+import uuid
 import datetime
+from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy.dialects.mysql import JSON, LONGBLOB
 
 db = SQLAlchemy()
 
+def gen_id():
+    return str(uuid.uuid4())
 
-class MissingCase(db.Model):
-    __tablename__ = 'cases'
-    id = db.Column(db.Integer, primary_key=True)
-    full_name = db.Column(db.String(100), nullable=False)
-    age = db.Column(db.Integer)
-    last_seen_location = db.Column(db.String(255))
-    description = db.Column(db.Text)
-    photo_url = db.Column(db.String(255))
-    lat = db.Column(db.Float)
-    lng = db.Column(db.Float)
-    # ArcFace моделі 512 өлшемді вектор береді
-    face_vector = db.Column(Vector(512))
-    status = db.Column(db.String(20), default='active')  # active / found
-    reporter_name = db.Column(db.String(100))
-    reporter_contact = db.Column(db.String(100))
+class User(db.Model):
+    __tablename__ = 'users'
+    id = db.Column(db.String(36), primary_key=True, default=gen_id)
+    email = db.Column(db.String(255), unique=True, nullable=False)
+    password_hash = db.Column(db.String(255), nullable=False)
+    full_name = db.Column(db.String(255))
+
+class Person(db.Model):
+    __tablename__ = 'persons'
+    id = db.Column(db.String(36), primary_key=True, default=gen_id)
+    user_id = db.Column(db.String(36), db.ForeignKey('users.id'))
+    status = db.Column(db.Enum('missing', 'found', 'archive'), default='missing')
     created_at = db.Column(db.DateTime, default=datetime.datetime.utcnow)
-    updated_at = db.Column(db.DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+    
+    # Связи (Relationships)
+    characteristics = db.relationship('Characteristics', backref='person', uselist=False)
+    clothing = db.relationship('ClothingAccessories', backref='person', uselist=False)
+    embeddings = db.relationship('FaceEmbedding', backref='person', lazy=True)
 
-    def to_dict(self):
-        return {
-            'id': self.id,
-            'full_name': self.full_name,
-            'age': self.age,
-            'last_seen_location': self.last_seen_location,
-            'description': self.description,
-            'photo_url': self.photo_url,
-            'lat': self.lat,
-            'lng': self.lng,
-            'status': self.status,
-            'reporter_name': self.reporter_name,
-            'reporter_contact': self.reporter_contact,
-            'created_at': self.created_at.isoformat() if self.created_at else None,
-        }
+class Characteristics(db.Model):
+    __tablename__ = 'characteristics'
+    person_id = db.Column(db.String(36), db.ForeignKey('persons.id'), primary_key=True)
+    gender = db.Column(db.Enum('male', 'female', 'other'))
+    hair_json = db.Column(JSON) # {'color': 'black', 'type': 'curly'}
+    body_json = db.Column(JSON)
+    features_json = db.Column(JSON)
 
+class ClothingAccessories(db.Model):
+    __tablename__ = 'clothing_accessories'
+    person_id = db.Column(db.String(36), db.ForeignKey('persons.id'), primary_key=True)
+    clothing_json = db.Column(JSON)
+    accessories_json = db.Column(JSON)
 
-class Sighting(db.Model):
-    __tablename__ = 'sightings'
-    id = db.Column(db.Integer, primary_key=True)
-    image_path = db.Column(db.String(255))
-    location_lat = db.Column(db.Float)
-    location_lng = db.Column(db.Float)
-    location_name = db.Column(db.String(255))
-    reporter_name = db.Column(db.String(100))
-    reporter_contact = db.Column(db.String(100))
-    notes = db.Column(db.Text)
-    face_vector = db.Column(Vector(512))
+class FaceEmbedding(db.Model):
+    __tablename__ = 'face_embeddings'
+    id = db.Column(db.String(36), primary_key=True, default=gen_id)
+    person_id = db.Column(db.String(36), db.ForeignKey('persons.id'))
+    embedding_blob = db.Column(LONGBLOB, nullable=False)
+    image_url = db.Column(db.String(512))
+    is_reference = db.Column(db.Boolean, default=False)
+
+class Detection(db.Model):
+    __tablename__ = 'detections'
+    id = db.Column(db.String(36), primary_key=True, default=gen_id)
+    camera_id = db.Column(db.String(36), db.ForeignKey('camera_streams.id'))
+    embedding_id = db.Column(db.String(36), db.ForeignKey('face_embeddings.id'))
+    confidence = db.Column(db.Float)
+    appearance_data = db.Column(JSON)
+    lat = db.Column(db.Numeric(10, 8))
+    lng = db.Column(db.Numeric(11, 8))
     timestamp = db.Column(db.DateTime, default=datetime.datetime.utcnow)
-    is_verified = db.Column(db.Boolean, default=False)
-
-    def to_dict(self):
-        return {
-            'id': self.id,
-            'image_path': self.image_path,
-            'location_lat': self.location_lat,
-            'location_lng': self.location_lng,
-            'location_name': self.location_name,
-            'reporter_name': self.reporter_name,
-            'notes': self.notes,
-            'timestamp': self.timestamp.isoformat() if self.timestamp else None,
-        }
-
-
-class Match(db.Model):
-    __tablename__ = 'matches'
-    id = db.Column(db.Integer, primary_key=True)
-    case_id = db.Column(db.Integer, db.ForeignKey('cases.id'), nullable=False)
-    sighting_id = db.Column(db.Integer, db.ForeignKey('sightings.id'), nullable=False)
-    similarity_score = db.Column(db.Float)  # 0-100%
-    status = db.Column(db.String(20), default='pending')  # pending / confirmed / dismissed
-    created_at = db.Column(db.DateTime, default=datetime.datetime.utcnow)
-
-    case = db.relationship('MissingCase', backref='matches')
-    sighting = db.relationship('Sighting', backref='matches')
-
-    def to_dict(self):
-        return {
-            'id': self.id,
-            'case_id': self.case_id,
-            'sighting_id': self.sighting_id,
-            'similarity_score': self.similarity_score,
-            'status': self.status,
-            'case': self.case.to_dict() if self.case else None,
-            'sighting': self.sighting.to_dict() if self.sighting else None,
-            'created_at': self.created_at.isoformat() if self.created_at else None,
-        }
