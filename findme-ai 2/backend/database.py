@@ -1,93 +1,119 @@
-from flask_sqlalchemy import SQLAlchemy
-from pgvector.sqlalchemy import Vector
-from sqlalchemy import Column, Integer, String, DateTime, Float, Boolean, Text
-import datetime
+import mysql.connector
+from mysql.connector import Error
+import uuid
+import json
+import numpy as np
 
-db = SQLAlchemy()
-
-
-class MissingCase(db.Model):
-    __tablename__ = 'cases'
-    id = db.Column(db.Integer, primary_key=True)
-    full_name = db.Column(db.String(100), nullable=False)
-    age = db.Column(db.Integer)
-    last_seen_location = db.Column(db.String(255))
-    description = db.Column(db.Text)
-    photo_url = db.Column(db.String(255))
-    lat = db.Column(db.Float)
-    lng = db.Column(db.Float)
-    # ArcFace моделі 512 өлшемді вектор береді
-    face_vector = db.Column(Vector(512))
-    status = db.Column(db.String(20), default='active')  # active / found
-    reporter_name = db.Column(db.String(100))
-    reporter_contact = db.Column(db.String(100))
-    created_at = db.Column(db.DateTime, default=datetime.datetime.utcnow)
-    updated_at = db.Column(db.DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
-
-    def to_dict(self):
-        return {
-            'id': self.id,
-            'full_name': self.full_name,
-            'age': self.age,
-            'last_seen_location': self.last_seen_location,
-            'description': self.description,
-            'photo_url': self.photo_url,
-            'lat': self.lat,
-            'lng': self.lng,
-            'status': self.status,
-            'reporter_name': self.reporter_name,
-            'reporter_contact': self.reporter_contact,
-            'created_at': self.created_at.isoformat() if self.created_at else None,
+class FindMeDatabase:
+    def __init__(self, host, user, password, database):
+        self.config = {
+            'host': host,
+            'user': user,
+            'password': password,
+            'database': database,
+            'charset': 'utf8mb4',
+            'collation': 'utf8mb4_unicode_ci'
         }
 
+    def get_connection(self):
+        return mysql.connector.connect(**self.config)
 
-class Sighting(db.Model):
-    __tablename__ = 'sightings'
-    id = db.Column(db.Integer, primary_key=True)
-    image_path = db.Column(db.String(255))
-    location_lat = db.Column(db.Float)
-    location_lng = db.Column(db.Float)
-    location_name = db.Column(db.String(255))
-    reporter_name = db.Column(db.String(100))
-    reporter_contact = db.Column(db.String(100))
-    notes = db.Column(db.Text)
-    face_vector = db.Column(Vector(512))
-    timestamp = db.Column(db.DateTime, default=datetime.datetime.utcnow)
-    is_verified = db.Column(db.Boolean, default=False)
+    # --- РАБОТА С ЭМБЕДДИНГАМИ ---
+    
+    def save_face_embedding(self, person_id, embedding_array, image_url, is_ref=True):
+        """Сохраняет float32 вектор как BLOB"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        # Конвертация numpy array в байты
+        emb_bytes = embedding_array.astype(np.float32).tobytes()
+        emb_id = str(uuid.uuid4())
+        
+        query = """
+        INSERT INTO face_embeddings (id, person_id, embedding_blob, image_url, is_reference)
+        VALUES (%s, %s, %s, %s, %s)
+        """
+        try:
+            cursor.execute(query, (emb_id, person_id, emb_bytes, image_url, is_ref))
+            conn.commit()
+            return emb_id
+        except Error as e:
+            print(f"Error saving embedding: {e}")
+        finally:
+            cursor.close()
+            conn.close()
 
-    def to_dict(self):
-        return {
-            'id': self.id,
-            'image_path': self.image_path,
-            'location_lat': self.location_lat,
-            'location_lng': self.location_lng,
-            'location_name': self.location_name,
-            'reporter_name': self.reporter_name,
-            'notes': self.notes,
-            'timestamp': self.timestamp.isoformat() if self.timestamp else None,
-        }
+    def get_all_embeddings_for_faiss(self):
+        """Загружает все векторы для инициализации FAISS индекса в памяти"""
+        conn = self.get_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("SELECT id, embedding_blob FROM face_embeddings")
+        results = cursor.fetchall()
+        
+        # Десериализация векторов обратно в numpy
+        embeddings = []
+        ids = []
+        for row in results:
+            vector = np.frombuffer(row['embedding_blob'], dtype=np.float32)
+            embeddings.append(vector)
+            ids.append(row['id'])
+            
+        cursor.close()
+        conn.close()
+        return np.array(embeddings), ids
 
+    # --- ГИБКИЙ ПОИСК ПО АТРИБУТАМ ---
 
-class Match(db.Model):
-    __tablename__ = 'matches'
-    id = db.Column(db.Integer, primary_key=True)
-    case_id = db.Column(db.Integer, db.ForeignKey('cases.id'), nullable=False)
-    sighting_id = db.Column(db.Integer, db.ForeignKey('sightings.id'), nullable=False)
-    similarity_score = db.Column(db.Float)  # 0-100%
-    status = db.Column(db.String(20), default='pending')  # pending / confirmed / dismissed
-    created_at = db.Column(db.DateTime, default=datetime.datetime.utcnow)
+    def create_person_with_attributes(self, user_id, char_data, clothing_data):
+        """Создает полную запись человека с JSON атрибутами"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        p_id = str(uuid.uuid4())
+        
+        try:
+            # 1. Создаем личность
+            cursor.execute("INSERT INTO persons (id, user_id) VALUES (%s, %s)", (p_id, user_id))
+            
+            # 2. Характеристики (JSON)
+            char_query = """
+            INSERT INTO characteristics (person_id, gender, hair_json, body_json, features_json)
+            VALUES (%s, %s, %s, %s, %s)
+            """
+            cursor.execute(char_query, (
+                p_id, 
+                char_data.get('gender'),
+                json.dumps(char_data.get('hair')),
+                json.dumps(char_data.get('body')),
+                json.dumps(char_data.get('features'))
+            ))
+            
+            # 3. Одежда
+            cloth_query = "INSERT INTO clothing_accessories (person_id, clothing_json) VALUES (%s, %s)"
+            cursor.execute(cloth_query, (p_id, json.dumps(clothing_data)))
+            
+            conn.commit()
+            return p_id
+        except Error as e:
+            conn.rollback()
+            raise e
+        finally:
+            cursor.close()
+            conn.close()
 
-    case = db.relationship('MissingCase', backref='matches')
-    sighting = db.relationship('Sighting', backref='matches')
+    # --- REAL-TIME ТРЕКИНГ ---
 
-    def to_dict(self):
-        return {
-            'id': self.id,
-            'case_id': self.case_id,
-            'sighting_id': self.sighting_id,
-            'similarity_score': self.similarity_score,
-            'status': self.status,
-            'case': self.case.to_dict() if self.case else None,
-            'sighting': self.sighting.to_dict() if self.sighting else None,
-            'created_at': self.created_at.isoformat() if self.created_at else None,
-        }
+    def log_detection(self, camera_id, embedding_id, confidence, lat, lng):
+        """Запись факта обнаружения для Heatmap и Timeline"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        det_id = str(uuid.uuid4())
+        
+        query = """
+        INSERT INTO detections (id, camera_id, embedding_id, confidence, lat, lng)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        """
+        cursor.execute(query, (det_id, camera_id, embedding_id, confidence, lat, lng))
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return det_id
