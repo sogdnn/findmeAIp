@@ -1,17 +1,30 @@
 from flask import Flask
+from flask_cors import CORSMiddleware
 from database import db
+from routes import cases_bp, matches_bp, sightings_bp
 
-app = Flask(__name__)
-app.config['SQLALCHEMY_DATABASE_URI'] = "mysql+mysqlconnector://root:password@localhost/findme_ai_db"
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+def create_app():
+    app = Flask(__name__)
+    
+    # Настройки безопасности (CORS)
+    CORSMiddleware(app)
 
-# Инициализируем базу
-db.init_app(app)
+    # --- НАСТРОЙКА MYSQL ---
+    # Замени 'root:password' на свои данные
+    app.config['SQLALCHEMY_DATABASE_URI'] = "mysql+mysqlconnector://root:password@localhost/findme_ai_db"
+    app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+    app.config['UPLOAD_FOLDER'] = 'uploads'
 
-# Проверка связи
-with app.app_context():
-    try:
-        db.engine.connect()
-        print("--- СВЯЗЬ С MYSQL УСТАНОВЛЕНА, СЭР! ---")
-    except Exception as e:
-        print(f"--- ОШИБКА ПОДКЛЮЧЕНИЯ: {e} ---")
+    # Инициализация БД
+    db.init_app(app)
+
+    # Регистрация сильных маршрутов
+    app.register_blueprint(cases_bp, url_prefix='/api')
+    app.register_blueprint(matches_bp, url_prefix='/api')
+    app.register_blueprint(sightings_bp, url_prefix='/api')
+
+    return app
+
+if __name__ == '__main__':
+    app = create_app()
+    app.run(debug=True, port=8000)
